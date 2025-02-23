@@ -1,0 +1,3 @@
+"","trees","min_n","tree_depth","num_leaves",".metric",".estimator","mean","n","std_err",".config"
+"1",1333,10,7,100,"roc_auc","binary",0.859405407740788,5,0.0005245834438124,"Preprocessor1_Model03"
+"2",1555,14,15,57,"roc_auc","binary",0.85905144874217,5,0.000307253225202562,"Preprocessor1_Model04"
