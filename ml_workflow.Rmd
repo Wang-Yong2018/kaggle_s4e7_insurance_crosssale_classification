@@ -53,7 +53,7 @@ library(lubridate)
 
 ```{r}
 data_path <- '../input/playground-series-s4e7/'
-n_max=10**5
+n_max=5*10**5
 train<- 
   readr::read_csv(file.path(data_path, 'train.csv'),
                   show_col_types = FALSE,
@@ -151,6 +151,32 @@ rcp_bs_v0 <-
 
 ```
 
+#### 4.2 v1 lgb used only
+```{r}
+rcp_bs_v1 <-
+  recipe(response ~ ., data = train_set) |>
+  update_role(id, new_role='ID')|>
+  # hangle categorical / nominal features.
+  step_mutate(driving_license=as.factor(driving_license),
+              region_code=as.factor(region_code),
+              previously_insured=as.factor(previously_insured),
+              policy_sales_channel=as.factor(policy_sales_channel)) |>
+  step_novel(all_nominal_predictors())|>
+  # step_unknown(all_nominal_predictors()) |>
+  # step_other(all_nominal_predictors(),threshold = 0.01)|>
+  # step_dummy(all_nominal_predictors(),one_hot = TRUE) |>
+  # handle numeric features
+  step_impute_median(all_numeric_predictors())|> 
+  step_log(all_numeric_predictors(),offset = 1, skip = FALSE) |>
+  # process the logical feature to factor feature
+  # proceeding the convert the character feature to factorical feature
+  step_zv(all_predictors())|>
+  step_corr(all_numeric_predictors(),threshold = 0.99)|>
+  # step_normalize(all_numeric_predictors())|> # Scale numeric predictors
+ # step_pca(all_numeric_predictors())|>
+  # step_smote(response, over_ratio = 1.0) |>
+  check_missing(all_predictors())
+```
 
 #### 4.10 all recipes
 
@@ -158,8 +184,8 @@ rcp_bs_v0 <-
 set.seed(1234)
 library(future)
 library(furrr)
-selected_rcps <- list(base=rcp_bs_v0#,
-                      #v1=rcp_bs_v1
+selected_rcps <- list(base=rcp_bs_v0,
+                      v1=rcp_bs_v1
                       )
 plan(multisession,workers = 5)
 #selected_rcps|>map(\(rcp_item) rcp_item|>prep()|>bake(new_data=train)|>summary())
@@ -177,19 +203,22 @@ glm_eng <-
 
 lgbm_eng<-
    boost_tree(
-      trees = 800, # Number of trees
-      learn_rate = 0.1,
+      trees = 1350, # Number of trees
+      learn_rate = 0.05,
       loss_reduction = 0.001,
       sample_size = 0.85, # Added sample_size
-      tree_depth = 11,
+      tree_depth = 8,
       #mtry = tune(),
-      min_n = 30
+      min_n = 13
    ) |>
    set_mode("classification")|>
    set_engine("lightgbm",
               metric='roc_auc', 
-               num_leaves = 900,
-              num_threads = 4,
+              num_leaves = 405,
+              num_threads = 8,
+              boosting = 'gbdt',
+              #boosting = 'rf',
+              #boosting = 'dart',
               verbose=1) 
 
 rf_eng<- rand_forest( trees = 500, 
@@ -203,10 +232,11 @@ xgb_eng<- boost_tree( trees = 500,
                       min_n=30) |>
   set_engine("xgboost",num.threads=8)|>
   set_mode("classification") 
-selected_eng <- list(glm=glm_eng,
-                     rf=rf_eng,
-                     lgbm=lgbm_eng,
-                     xgb=xgb_eng)
+selected_eng <- list(#glm=glm_eng,
+                     #rf=rf_eng,
+                     lgbm=lgbm_eng#,
+                     #xgb=xgb_eng
+                     )
 
 ```
 
@@ -237,21 +267,21 @@ rocauc_metrics <- metric_set(accuracy, bal_accuracy,roc_auc)
 #### simple workflowset
 
 ```{r}
-# set.seed(1234)
-# library(future)
-# plan(multisession,workers = 12)
-# ctrl <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
-# wfs_result <-
-#   workflow_set(preproc = selected_rcps,
-#                models = selected_eng ) |>
-#   workflow_map(fn='fit_resamples',
-#                resamples =cv_folds,
-#                metrics =rocauc_metrics,
-#                control = ctrl
-#                )
-# wfs_result|>collect_metrics()  
-#   
-# plan(sequential)
+set.seed(1234)
+library(future)
+plan(multisession,workers = 12)
+ctrl <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
+wfs_result <-
+  workflow_set(preproc = selected_rcps,
+               models = selected_eng ) |>
+  workflow_map(fn='fit_resamples',
+               resamples =cv_folds,
+               metrics =rocauc_metrics,
+               control = ctrl
+               )
+wfs_result|>collect_metrics()
+
+plan(sequential)
 ```
 
 ### 7 stacking
@@ -304,16 +334,20 @@ get_tune_grid <- function(tune_eng, size=20){
   tune_eng |>
     extract_parameter_set_dials()|>
     #update(penalty=penalty(range=c(-1,2)))|>
+    update(trees=trees(range=c(1000,1500)),
+           min_n=min_n(range=c(10,35)),
+           tree_depth=tree_depth(range=c(6,12)),
+           num_leaves=num_leaves(range=c(50,500)))|>
     grid_space_filling(size={size})
 }
 
-tune_glm_grid = get_tune_grid(tune_glm_eng,size=10)
-tune_lgb_grid = get_tune_grid(tune_lgb_eng,size=10)
+#tune_glm_grid = get_tune_grid(tune_glm_eng,size=10)
+tune_lgb_grid = get_tune_grid(tune_lgb_eng,size=20)
 
 
 set.seed(1234)
 library(future)
-plan(multisession,workers = 4)
+plan(multisession,workers = 8)
 ctrl_resample  <- control_resamples(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE)
 ctrl_race <- control_race(save_pred = TRUE, save_workflow = TRUE,verbose=TRUE,verbose_elim = TRUE)
 wfs_result <-
